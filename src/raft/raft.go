@@ -87,14 +87,14 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 
-	rf.print("About to get my state")
+	//rf.print("About to get my state")
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
 	term = rf.currentTerm
 	isleader = rf.state == Leader
 
-	rf.print("Got my state")
+	//rf.print("Got my state")
 	return term, isleader
 }
 
@@ -179,21 +179,31 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = -1
 	}
 	if rf.votedFor == -1 {
-		rf.print("Granting vote to server ", args.CandidateId)
+		//rf.print("Granting vote to server ", args.CandidateId)
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 	}
 	if rf.state != Follower && args.Term > rf.currentTerm {
-		rf.print("Stepping down in request vote after encounter with ", args.CandidateId)
+		//rf.print("Stepping down in request vote after encounter with ", args.CandidateId)
 		rf.currentTerm = args.Term
-		rf.stepdownCh <- true
-		rf.print("Sent it: Stepping down in request vote after encounter with ", args.CandidateId)
+		select {
+		case rf.stepdownCh <- true:
+			//rf.print("Sent it: Stepping down in request vote after encounter with ", args.CandidateId)
+		default:
+			rf.state = Follower
+			//rf.print("Changing the state directly in RequestVote")
+		}
 	}
 	if rf.state == Follower {
 		rf.currentTerm = args.Term
-		rf.print("Recving comm in request vote from ", args.CandidateId)
-		rf.receivedCommCh <- true
-		rf.print("Sent it: Recving comm in request vote from ", args.CandidateId)
+		//rf.print("Recving comm in request vote from ", args.CandidateId)
+		select {
+		case rf.receivedCommCh <- true:
+			//rf.print("Sent it: Recving comm in request vote from ", args.CandidateId)
+		default:
+			//rf.print("Too late. Another election about to start")
+		}
+			
 	}
 }
 
@@ -229,7 +239,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs) {
 	success := rf.peers[server].Call("Raft.RequestVote", args, &reply)
 	
 	if !success {
-		rf.print("Failed to successfully send request vote to server ", server)
+		//rf.print("Failed to successfully send request vote to server ", server)
 		return
 	}
 
@@ -241,18 +251,28 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs) {
 		return
 	}
 	if reply.Term > rf.currentTerm {
-		rf.print(reply.Term, " > ", rf.currentTerm, " in sendRequestVote")
-		rf.print("Sending stepdown after sending request vote and receiving a higher term from server ", server)
+		//rf.print(reply.Term, " > ", rf.currentTerm, " in sendRequestVote")
+		//rf.print("Sending stepdown after sending request vote and receiving a higher term from server ", server)
 		rf.currentTerm = reply.Term
-		rf.stepdownCh <- true
-		rf.print("Sent it: Sending stepdown after sending request vote and receiving a higher term from server ", server)
+		select {
+		case rf.stepdownCh <- true:
+			//rf.print("Sent it: Sending stepdown after sending request vote and receiving a higher term from server ", server)
+		default:
+			rf.state = Follower
+			//rf.print("Directly changing state in sendRequestVote")
+		}
 	}
 	if reply.VoteGranted {
 		rf.noOfVotes += 1
 		if rf.hasMajorityVotes() {
-			rf.print("Sending wonElection after recving vote from ", server)
-			rf.wonElectionCh <- true
-			rf.print("Sent it: Sending wonElection after recving vote from ", server)
+			//rf.print("Sending wonElection after recving vote from ", server)
+			rf.state = Leader
+			select {
+			case rf.wonElectionCh <- true:
+				//rf.print("Sent it: Sending wonElection after recving vote from ", server)
+			default:
+				//rf.print("Directly changing state to Leader")
+			}
 		}
 	}
 }
@@ -287,15 +307,27 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if rf.state == Follower {
-		rf.print("Recving comm after appending entry from ", args.LeaderId)
-		rf.receivedCommCh <- true
-		rf.print("Sent it: Recving comm after appending entry from ", args.LeaderId)
+		//rf.print("Recving comm after appending entry from ", args.LeaderId)
+		select {
+		case rf.receivedCommCh <- true:
+			//rf.print("Sent it: Recving comm after appending entry from ", args.LeaderId)
+		default:
+			// Do nothing
+			// It's too late
+			// Another election is going to start
+			//rf.print("Too late. Another election is about to start")
+		}
 	} else {
 		if args.Term > rf.currentTerm {
-			rf.print("Stepping down after appending entry from ", args.LeaderId)
+			//rf.print("Stepping down after appending entry from ", args.LeaderId)
 			rf.currentTerm = args.Term
-			rf.stepdownCh <- true
-			rf.print("Sent it: Stepping down after appending entry from ", args.LeaderId)
+			select {
+			case rf.stepdownCh <- true:
+				//rf.print("Sent it: Stepping down after appending entry from ", args.LeaderId)
+			default:
+				//rf.print("Directly changing state in AppendEntries")
+				rf.state = Follower
+			}
 		}
 	}
 }
@@ -305,7 +337,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs) {
 	success := rf.peers[server].Call("Raft.AppendEntries", args, &reply)
 	
 	if !success {
-		rf.print("Failed to successfully send append entries to server ", server)
+		//rf.print("Failed to successfully send append entries to server ", server)
 		return
 	}
 	
@@ -316,10 +348,21 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs) {
 		return
 	}
 	if reply.Term > args.Term {
-		rf.print("Stepping down after sending append entry to ", server)
+		//rf.print("Stepping down after sending append entry to ", server)
 		rf.currentTerm = reply.Term
-		rf.stepdownCh <- true
-		rf.print("Sent it: Stepping down after sending append entry to ", server)
+		select {
+		case rf.stepdownCh <- true:
+			// The state change will happen in the main loop
+			//rf.print("Sent it: Stepping down after sending append entry to ", server)
+		default:
+			// The main loop is no longer listening for the stepdownCh channel
+			// because it's time for a new heartbeat
+			// Set state to follower here and when the heartbeat routine
+			// acquires the lock, it will abort operation, seeing that it's
+			// no longer the leader
+			rf.state = Follower
+			//rf.print("Directly changing state in the sendAppendEntries because of blocked channel")
+		}
 	}
 }
 
@@ -365,51 +408,58 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) ticker() {
-	for rf.killed() == false {
-
-		// Your code here (2A)
-		// Check if a leader election should be started.
-
-
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
-	}
-}
-
-func (rf *Raft) stepdown() {
+func (rf *Raft) candidateStepdown() {
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.state != Candidate {
+		return
+	}
 	rf.state = Follower
-	rf.receivedCommCh = make(chan bool)
-	rf.mu.Unlock()
 }
 
-func (rf *Raft) startElection() {
-	rf.print("About to create args for running election")
+func (rf *Raft) leaderStepdown() {
 	rf.mu.Lock()
-	rf.print("Creating args for running election")
-	rf.currentTerm += 1
-	rf.state = Candidate
-	rf.noOfVotes = 1
-	rf.votedFor = rf.me
-	args := RequestVoteArgs {
-		Term: rf.currentTerm,
-		CandidateId: rf.me,
+	defer rf.mu.Unlock()
+	if rf.state != Leader {
+		return
 	}
-	rf.mu.Unlock()
-	rf.print("Finished creating args for running election")
+	rf.state = Follower
+}
+
+func (rf *Raft) runElection(args *RequestVoteArgs) {
+	//rf.print("About to create args for running election")
+	//rf.print("Finished creating args for running election")
 	for i, _ := range rf.peers {
 		if i != rf.me {
-			rf.print("Sending vote request to server ", i)
-			go rf.sendRequestVote(i, &args)
+			//rf.print("Sending vote request to server ", i)
+			go rf.sendRequestVote(i, args)
 		}
+	}
+}
+
+func (rf *Raft) initNewElection() *RequestVoteArgs {
+	if rf.state != Candidate {
+		//rf.print("State is no longer Candidate. Aborting election")
+		rf.mu.Unlock()
+		return nil
+	}
+	//rf.print("Creating args for running election")
+	rf.currentTerm += 1
+	rf.noOfVotes = 1
+	rf.votedFor = rf.me
+	return &RequestVoteArgs {
+		Term: rf.currentTerm,
+		CandidateId: rf.me,
 	}
 }
 
 func (rf *Raft) heartbeat() {
 	rf.mu.Lock()
+	if rf.state != Leader {
+		//rf.print("State is no longer Leader. Aborting heartbeat")
+		rf.mu.Unlock()
+		return
+	}
 	args := AppendEntriesArgs{
 		Term: rf.currentTerm,
 		LeaderId: rf.me,
@@ -426,43 +476,48 @@ func (rf *Raft) heartbeat() {
 
 func (rf *Raft) main() {
 	for rf.killed() == false {
-		switch rf.state {
+		rf.mu.Lock()
+		state := rf.state
+		rf.mu.Unlock()
+		switch state {
 		case Leader:
+			//rf.print("Sending heartbeat")
+			rf.heartbeat()
 			select {
 			case <-time.After(heartbeatTime()):
-				rf.print("Sending heartbeat")
-				rf.heartbeat()
 			case <-rf.stepdownCh:
-				rf.print("Stepping down !")
-				rf.stepdown();
+				//rf.print("Stepping down !")
+				rf.leaderStepdown();
 			}
 		case Follower:
 			select {
 			case <-time.After(electionTimeout()):
-				rf.print("Starting election")
-				rf.stepdownCh = make(chan bool)
-				rf.wonElectionCh = make(chan bool)
-				rf.startElection()
+				//rf.print("Starting election")
+				rf.mu.Lock()
+				rf.state = Candidate
+				args := rf.initNewElection()
+				rf.mu.Unlock()
+				if args != nil {
+					rf.runElection(args)
+				}
 			case <-rf.receivedCommCh:
 				continue
 			}
 		case Candidate:
 			select {
 			case <-time.After(electionTimeout()):
-				rf.print("Starting election")
-				rf.startElection()
-			case <-rf.stepdownCh:
-				rf.print("Stepping down !")
-				rf.stepdown()
-			case <-rf.wonElectionCh:
-				rf.print("I Won Election!")
+				//rf.print("Starting election")
 				rf.mu.Lock()
-				rf.print("About to change state to leader")
-				rf.stepdownCh = make(chan bool)
-				rf.state = Leader
-				rf.print("Done changing state to leader")
+				args := rf.initNewElection()
 				rf.mu.Unlock()
-				rf.print("After winning election, finished state transfer")
+				if args != nil {
+					rf.runElection(args)
+				}
+			case <-rf.stepdownCh:
+				//rf.print("Stepping down !")
+				rf.candidateStepdown()
+			case <-rf.wonElectionCh:
+				//rf.print("I Won Election and was informed in the channel!")
 			}
 		}
 	}
