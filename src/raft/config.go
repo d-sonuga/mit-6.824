@@ -62,7 +62,7 @@ type config struct {
 
 var ncpu_once sync.Once
 
-func make_config(t *testing.T, n int, unreliable bool, snapshot bool) *config {
+func make_config(t *testing.T, n int, unreliable bool, snapshot bool, testName string) *config {
 	ncpu_once.Do(func() {
 		if runtime.NumCPU() < 2 {
 			fmt.Printf("warning: only one CPU, which may conceal locking bugs\n")
@@ -94,7 +94,7 @@ func make_config(t *testing.T, n int, unreliable bool, snapshot bool) *config {
 	// create a full set of Rafts.
 	for i := 0; i < cfg.n; i++ {
 		cfg.logs[i] = map[int]interface{}{}
-		cfg.start1(i, applier)
+		cfg.start1(i, applier, testName)
 	}
 
 	// connect everyone
@@ -270,7 +270,7 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 // allocate new outgoing port file names, and a new
 // state persister, to isolate previous instance of
 // this server. since we cannot really kill it.
-func (cfg *config) start1(i int, applier func(int, chan ApplyMsg)) {
+func (cfg *config) start1(i int, applier func(int, chan ApplyMsg), testName string) {
 	cfg.crash1(i)
 
 	// a fresh set of outgoing ClientEnd names.
@@ -315,7 +315,7 @@ func (cfg *config) start1(i int, applier func(int, chan ApplyMsg)) {
 
 	applyCh := make(chan ApplyMsg)
 
-	rf := Make(ends, i, cfg.saved[i], applyCh)
+	rf := Make(ends, i, cfg.saved[i], applyCh, testName)
 
 	cfg.mu.Lock()
 	cfg.rafts[i] = rf

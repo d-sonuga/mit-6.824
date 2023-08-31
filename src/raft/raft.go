@@ -90,6 +90,8 @@ type Raft struct {
 	matchIndex []int
 	noOfCopies map[int]int // Tells how many servers a copy of a command has been replicated on
 	applyCh chan ApplyMsg
+
+	testName string
 }
 
 // return currentTerm and whether this server
@@ -99,14 +101,14 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 
-	//rf.print("About to get my state")
+	////rf.print("About to get my state")
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
 	term = rf.currentTerm
 	isleader = rf.state == Leader
 
-	//rf.print("Got my state")
+	////rf.print("Got my state")
 	return term, isleader
 }
 
@@ -189,43 +191,47 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	
 	if args.Term > rf.currentTerm {
-		//rf.print("Granting vote to server ", args.CandidateId)
 		lastLogTerm := rf.log[len(rf.log) - 1].Term
 		lastLogIndex := len(rf.log) - 1
 		if lastLogTerm != args.LastLogTerm {
 			if lastLogTerm > args.LastLogTerm {
+				////rf.print("Rejecting request vote from server ", args.CandidateId, " due to incomplete logs")
 				return
 			}
 		} else {
 			if lastLogIndex > args.LastLogIndex {
+				////rf.print("Rejecting request vote from server ", args.CandidateId, " due to incomplete logs")
 				return
 			}
 		}
+		////rf.print("Granting vote to server ", args.CandidateId)
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 	}
 
 	if rf.state != Follower && args.Term > rf.currentTerm {
-		//rf.print("Stepping down in request vote after encounter with ", args.CandidateId)
+		////rf.print("Stepping down in request vote after encounter with ", args.CandidateId)
 		rf.currentTerm = args.Term
 		select {
 		case rf.stepdownCh <- true:
-			//rf.print("Sent it: Stepping down in request vote after encounter with ", args.CandidateId)
+			////rf.print("Sent it: Stepping down in request vote after encounter with ", args.CandidateId)
 		default:
 			rf.state = Follower
-			//rf.print("Changing the state directly in RequestVote")
+			////rf.print("Changing the state directly in RequestVote")
 		}
 	}
-	if rf.state == Follower {
-		rf.currentTerm = args.Term
-		//rf.print("Recving comm in request vote from ", args.CandidateId)
-		select {
-		case rf.receivedCommCh <- true:
-			//rf.print("Sent it: Recving comm in request vote from ", args.CandidateId)
-		default:
-			//rf.print("Too late. Another election about to start")
+	if reply.VoteGranted {
+		if rf.state == Follower {
+			rf.currentTerm = args.Term
+			////rf.print("Recving comm in request vote from ", args.CandidateId)
+			select {
+			case rf.receivedCommCh <- true:
+				////rf.print("Sent it: Recving comm in request vote from ", args.CandidateId)
+			default:
+				////rf.print("Too late. Another election about to start")
+			}
+				
 		}
-			
 	}
 }
 
@@ -258,12 +264,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs) {
 	var reply RequestVoteReply
-	success := rf.peers[server].Call("Raft.RequestVote", args, &reply)
-	
+
+	success := false
+	for !success && !rf.killed() {
+		success = rf.peers[server].Call("Raft.RequestVote", args, &reply)
+		
+		if !success {
+			////rf.print("Failed to send request vote to server ", server, " Retrying")
+		}
+	}
 	if !success {
-		//rf.print("Failed to successfully send request vote to server ", server)
 		return
 	}
+	////rf.print("Successfully sent request vote to server ", server)
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -273,21 +286,21 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs) {
 		return
 	}
 	if reply.Term > rf.currentTerm {
-		//rf.print(reply.Term, " > ", rf.currentTerm, " in sendRequestVote")
-		//rf.print("Sending stepdown after sending request vote and receiving a higher term from server ", server)
+		////rf.print(reply.Term, " > ", rf.currentTerm, " in sendRequestVote")
+		////rf.print("Sending stepdown after sending request vote and receiving a higher term from server ", server)
 		rf.currentTerm = reply.Term
 		select {
 		case rf.stepdownCh <- true:
-			//rf.print("Sent it: Sending stepdown after sending request vote and receiving a higher term from server ", server)
+			////rf.print("Sent it: Sending stepdown after sending request vote and receiving a higher term from server ", server)
 		default:
 			rf.state = Follower
-			//rf.print("Directly changing state in sendRequestVote")
+			////rf.print("Directly changing state in sendRequestVote")
 		}
 	}
 	if reply.VoteGranted {
 		rf.noOfVotes += 1
 		if rf.hasMajorityVotes() {
-			//rf.print("Sending wonElection after recving vote from ", server)
+			////rf.print("Sending wonElection after recving vote from ", server)
 			rf.state = Leader
 			rf.nextIndex = []int{}
 			rf.matchIndex = []int{}
@@ -297,9 +310,9 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs) {
 			}
 			select {
 			case rf.wonElectionCh <- true:
-				//rf.print("Sent it: Sending wonElection after recving vote from ", server)
+				////rf.print("Sent it: Sending wonElection after recving vote from ", server)
 			default:
-				//rf.print("Directly changing state to Leader")
+				////rf.print("Directly changing state to Leader")
 			}
 		}
 	}
@@ -334,15 +347,35 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	//rf.print(args.PrevLogIndex, args.PrevLogTerm)
+	if len(args.Entries) != 0 {
+		//rf.print("Received append entries ", args.Entries, " from leader ", args.LeaderId)
+	}
+	if rf.state == Follower {
+		rf.notifyCommRevdFromLeader(args)
+	} else {
+		////rf.print("Stepping down after receiving append entry from ", args.LeaderId)
+		rf.currentTerm = args.Term
+		select {
+		case rf.stepdownCh <- true:
+			////rf.print("Sent it: Stepping down after appending entry from ", args.LeaderId)
+		default:
+			////rf.print("Directly changing state in AppendEntries")
+			rf.state = Follower
+		}
+	}
+	rf.currentTerm = args.Term
+
 	if args.PrevLogIndex >= len(rf.log) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		if len(args.Entries) != 0 {
+			//rf.print("Server with log ", rf.log, " Rejecting append entries ", args.Entries, " with args PrevLogIndex:", args.PrevLogIndex, " and PrevLogTerm: ", args.PrevLogTerm)
+		}
 		return
 	}
 
 	reply.Success = true
 
 	newLog := []LogEntry{}
-	//rf.print("hdhdhdh", rf.log)
+	////rf.print("hdhdhdh", rf.log)
 	for i := 0; i <= args.PrevLogIndex; i++ {
 		newLog = append(newLog, rf.log[i])
 	}
@@ -358,6 +391,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if lastNewEntryIndex < min {
 			min = lastNewEntryIndex
 		}
+		//rf.print("Updating rf.commitIndex from ", rf.commitIndex, " to ", min)
 		rf.commitIndex = min
 	}
 
@@ -368,46 +402,47 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			Command: rf.log[rf.lastApplied].Command,
 			CommandIndex: rf.lastApplied,
 		}
+		//rf.print("Applying the entry ", rf.log[rf.lastApplied])
 		rf.applyCh <- toapply
 	}
+}
 
-	if rf.state == Follower {
-		//rf.print("Recving comm after appending entry from ", args.LeaderId)
-		select {
-		case rf.receivedCommCh <- true:
-			//rf.print("Sent it: Recving comm after appending entry from ", args.LeaderId)
-		default:
-			// Do nothing
-			// It's too late
-			// Another election is going to start
-			//rf.print("Too late. Another election is about to start")
-		}
-	} else {
-		if args.Term > rf.currentTerm {
-			//rf.print("Stepping down after appending entry from ", args.LeaderId)
-			rf.currentTerm = args.Term
-			select {
-			case rf.stepdownCh <- true:
-				//rf.print("Sent it: Stepping down after appending entry from ", args.LeaderId)
-			default:
-				//rf.print("Directly changing state in AppendEntries")
-				rf.state = Follower
-			}
-		}
+func (rf *Raft) notifyCommRevdFromLeader(args *AppendEntriesArgs) {
+	////rf.print("Recving comm after appending entry from ", args.LeaderId)
+	select {
+	case rf.receivedCommCh <- true:
+		////rf.print("Sent it: Recving comm after appending entry from ", args.LeaderId)
+	default:
+		// Do nothing
+		// It's too late
+		// Another election is going to start
+		////rf.print("Too late. Another election is about to start")
 	}
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs) {
-	var reply AppendEntriesReply
 	for {
-		/*rf.print("I the leader: my log: ", rf.log)
-		rf.print("About to send entries ", args.Entries, "with prevLogTerm", args.PrevLogTerm,
+		reply := &AppendEntriesReply{}
+		/*////rf.print("I the leader: my log: ", rf.log)
+		////rf.print("About to send entries ", args.Entries, "with prevLogTerm", args.PrevLogTerm,
 			"and prevLogIndex", args.PrevLogIndex, "to server", server)*/
-		success := rf.peers[server].Call("Raft.AppendEntries", args, &reply)
-		
+		if len(args.Entries) != 0 {
+			//rf.print("Sending append entries ", args.Entries, " to server ", server, " with args ", *args)
+		}
+		success := false
+		for !success && !rf.killed() {
+			success = rf.peers[server].Call("Raft.AppendEntries", args, reply)
+			
+			if !success {
+				////rf.print("Failed to send append entries to server ", server, " Retrying")
+				continue
+			}
+		}
 		if !success {
-			//rf.print("Failed to successfully send append entries to server ", server)
 			return
+		}
+		if len(args.Entries) != 0 {
+			//rf.print("Successfully sent append entries to server ", server)
 		}
 		
 		rf.mu.Lock()
@@ -417,12 +452,12 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs) {
 			return
 		}
 		if reply.Term > args.Term {
-			//rf.print("Stepping down after sending append entry to ", server)
+			////rf.print("Stepping down after sending append entry to ", server)
 			rf.currentTerm = reply.Term
 			select {
 			case rf.stepdownCh <- true:
 				// The state change will happen in the main loop
-				//rf.print("Sent it: Stepping down after sending append entry to ", server)
+				////rf.print("Sent it: Stepping down after sending append entry to ", server)
 			default:
 				// The main loop is no longer listening for the stepdownCh channel
 				// because it's time for a new heartbeat
@@ -430,17 +465,16 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs) {
 				// acquires the lock, it will abort operation, seeing that it's
 				// no longer the leader
 				rf.state = Follower
-				//rf.print("Directly changing state in the sendAppendEntries because of blocked channel")
+				////rf.print("Directly changing state in the sendAppendEntries because of blocked channel")
 			}
 			rf.mu.Unlock()
 			return
 		}
 		if len(args.Entries) != 0 {
 			if reply.Success {
-				//rf.print("Log", rf.log, "Entries", args.Entries)
-				//rf.print("jjdjdjd", args.PrevLogIndex, rf.noOfCopies)
 				cmdIndex := args.PrevLogIndex + 1
 				rf.noOfCopies[cmdIndex] += 1
+				//rf.print("Append entries to server ", server, " was successful", " no of copies with the command at ", cmdIndex, " is now ", rf.noOfCopies[cmdIndex])
 				if rf.noOfCopies[cmdIndex] == len(rf.peers) / 2 + 1 {
 					rf.commitIndex = max(cmdIndex, rf.commitIndex)
 					for rf.commitIndex > rf.lastApplied {
@@ -450,17 +484,22 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs) {
 							Command: rf.log[rf.lastApplied].Command,
 							CommandIndex: rf.lastApplied,
 						}
+						////rf.print("Applying entry ", rf.log[rf.lastApplied])
 						rf.applyCh <- toapply
 					}
 				}
-				rf.nextIndex[server] += 1
+				rf.nextIndex[server] = rf.nextIndex[server] + 1
 				rf.matchIndex[server] = max(rf.matchIndex[server], cmdIndex)
 				if len(rf.log) - 1 < rf.nextIndex[server] {
 					rf.mu.Unlock()
 					return
 				}
+				args.Entries = []LogEntry{rf.log[rf.nextIndex[server]]}
+				args.PrevLogIndex = rf.nextIndex[server] - 1
+				args.PrevLogTerm = rf.log[rf.nextIndex[server] - 1].Term
 				rf.mu.Unlock()
 			} else {
+				//rf.print("Server ", server, " doenst have the required entry. Reducing nextIndex from ", rf.nextIndex[server], " to ", rf.nextIndex[server] - 1, " and retrying")
 				rf.nextIndex[server] -= 1
 				args.Entries = []LogEntry{rf.log[rf.nextIndex[server]]}
 				args.PrevLogIndex = rf.nextIndex[server] - 1
@@ -472,6 +511,14 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs) {
 			return
 		}
 	}
+}
+
+func min(a int, b int) int {
+	m := a
+	if b < a {
+		m = b
+	}
+	return m
 }
 
 func max(a int, b int) int {
@@ -508,6 +555,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	term, index, isLeader = rf.currentTerm, len(rf.log), true
 
+	//rf.print("Received command ", command, " from client")
+	////rf.print("About to send append entries to replicate command ", command)
 	args := &AppendEntriesArgs {
 		Term: rf.currentTerm,
 		LeaderId: rf.me,
@@ -516,23 +565,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		PrevLogTerm: rf.log[len(rf.log) - 1].Term,
 		LeaderCommit: rf.commitIndex,
 	}
-	//rf.print("Hereee in leader", len(rf.log) - 1, rf.getPrevLogTerm())
 	entry := LogEntry{ Command: command, Term:  rf.currentTerm }
 	rf.log = append(rf.log, entry)
 	rf.noOfCopies[len(rf.log) - 1] = 1
 
 	for i := range rf.peers {
-		if i == rf.me {
-			continue
+		if i != rf.me && rf.nextIndex[i] == len(rf.log) - 1 {
+			go rf.sendAppendEntries(i, args)
 		}
-		a := &AppendEntriesArgs{}
-		*a = *args
-		if len(rf.log) - 1 >= rf.nextIndex[i] {
-			a.Entries = []LogEntry{rf.log[rf.nextIndex[i]]}
-			a.PrevLogIndex = rf.nextIndex[i] - 1
-			a.PrevLogTerm = rf.log[rf.nextIndex[i] - 1].Term
-		}
-		go rf.sendAppendEntries(i, a)
 	}
 	rf.mu.Unlock()
 
@@ -577,11 +617,11 @@ func (rf *Raft) leaderStepdown() {
 }
 
 func (rf *Raft) runElection(args *RequestVoteArgs) {
-	//rf.print("About to create args for running election")
-	//rf.print("Finished creating args for running election")
+	////rf.print("About to create args for running election")
+	////rf.print("Finished creating args for running election")
 	for i, _ := range rf.peers {
 		if i != rf.me {
-			//rf.print("Sending vote request to server ", i)
+			////rf.print("Sending vote request to server ", i)
 			go rf.sendRequestVote(i, args)
 		}
 	}
@@ -589,11 +629,10 @@ func (rf *Raft) runElection(args *RequestVoteArgs) {
 
 func (rf *Raft) initNewElection() *RequestVoteArgs {
 	if rf.state != Candidate {
-		//rf.print("State is no longer Candidate. Aborting election")
-		rf.mu.Unlock()
+		////rf.print("State is no longer Candidate. Aborting election")
 		return nil
 	}
-	//rf.print("Creating args for running election")
+	////rf.print("Creating args for running election")
 	rf.currentTerm += 1
 	rf.noOfVotes = 1
 	rf.votedFor = rf.me
@@ -608,25 +647,26 @@ func (rf *Raft) initNewElection() *RequestVoteArgs {
 func (rf *Raft) heartbeat() {
 	rf.mu.Lock()
 	if rf.state != Leader {
-		//rf.print("State is no longer Leader. Aborting heartbeat")
+		////rf.print("State is no longer Leader. Aborting heartbeat")
 		rf.mu.Unlock()
 		return
 	}
-	args := AppendEntriesArgs{
-		Term: rf.currentTerm,
-		LeaderId: rf.me,
-		Entries: []LogEntry{},
-		PrevLogIndex: len(rf.log) - 1,
-		PrevLogTerm: rf.log[len(rf.log) - 1].Term,
-		LeaderCommit: rf.commitIndex,
-	}
-	rf.mu.Unlock()
+
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
-		go rf.sendAppendEntries(i, &args)
+		args := &AppendEntriesArgs{
+			Term: rf.currentTerm,
+			LeaderId: rf.me,
+			Entries: []LogEntry{},
+			PrevLogIndex: rf.nextIndex[i] - 1,
+			PrevLogTerm: rf.log[rf.nextIndex[i] - 1].Term,
+			LeaderCommit: rf.commitIndex,
+		}
+		go rf.sendAppendEntries(i, args)
 	}
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) main() {
@@ -636,19 +676,20 @@ func (rf *Raft) main() {
 		rf.mu.Unlock()
 		switch state {
 		case Leader:
-			//rf.print("Sending heartbeat")
+			////rf.print("Sending heartbeat")
 			rf.heartbeat()
 			select {
 			case <-time.After(heartbeatTime()):
 			case <-rf.stepdownCh:
-				//rf.print("Stepping down !")
+				////rf.print("Stepping down !")
 				rf.leaderStepdown();
 			}
 		case Follower:
 			select {
 			case <-time.After(electionTimeout()):
-				//rf.print("Starting election")
+				////rf.print("Starting election")
 				rf.mu.Lock()
+				//rf.print("Oh shit, becoming a candidate")
 				rf.state = Candidate
 				args := rf.initNewElection()
 				rf.mu.Unlock()
@@ -661,7 +702,7 @@ func (rf *Raft) main() {
 		case Candidate:
 			select {
 			case <-time.After(electionTimeout()):
-				//rf.print("Starting election")
+				////rf.print("Starting election")
 				rf.mu.Lock()
 				args := rf.initNewElection()
 				rf.mu.Unlock()
@@ -669,10 +710,10 @@ func (rf *Raft) main() {
 					rf.runElection(args)
 				}
 			case <-rf.stepdownCh:
-				//rf.print("Stepping down !")
+				////rf.print("Stepping down !")
 				rf.candidateStepdown()
 			case <-rf.wonElectionCh:
-				//rf.print("I Won Election and was informed in the channel!")
+				////rf.print("I Won Election and was informed in the channel!")
 			}
 		}
 	}
@@ -686,8 +727,18 @@ func (rf *Raft) print(a ...interface{}) {
 	if rf.state == Candidate {
 		stateStr = "Candidate"
 	}
-	print("Server ", rf.me, " in state ", stateStr, " and term, ", rf.currentTerm, ": ")
+	print("Server ", rf.me, " in state ", stateStr, " and term, ", rf.currentTerm,
+		"with log ", rf.stringifyLog(), " and commit index ", rf.commitIndex, " in test ", rf.testName,": ")
 	fmt.Println(a...)
+	print("\n")
+}
+
+func (rf *Raft) stringifyLog() string {
+	s := "[ "
+	for _, val := range rf.log {
+		s = fmt.Sprintf("%s %v", s, val)
+	}
+	return s + " ]"
 }
 
 func heartbeatTime() time.Duration {
@@ -709,7 +760,7 @@ func electionTimeout() time.Duration {
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
 func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	persister *Persister, applyCh chan ApplyMsg, testName string) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
@@ -728,9 +779,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 	rf.log = []LogEntry{ { Command: 0, Term: -1 } }
 	rf.noOfCopies = make(map[int]int)
-	rf.noOfCopies[0] = 3
+	rf.noOfCopies[0] = len(rf.peers)
 	rf.matchIndex = []int{}
 	rf.nextIndex = []int{}
+	rf.testName = testName
 	for range rf.peers {
 		rf.nextIndex = append(rf.nextIndex, 1)
 	}
