@@ -225,10 +225,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) convertToFollower(serverEncountered int) {
 	select {
 	case rf.stepdownCh <- true:
-		//rf.print("Sent it: Stepping down in request vote after encounter with ", serverEncountered)
+		// The state change will happen in the main loop
+		//rf.print("Sent it: Stepping down after encounter with ", serverEncountered)
 	default:
+		// The main loop is no longer listening for the stepdownCh channel
+		// because it's time for a new heartbeat
+		// Set state to follower here and when the heartbeat routine
+		// acquires the lock, it will abort operation, seeing that it's
+		// no longer the leader
 		rf.state = Follower
-		//rf.print("Changing the state directly in RequestVote")
+		//rf.print("Changing the state directly to stepdown")
 	}
 }
 
@@ -267,6 +273,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs) {
 		success = rf.peers[server].Call("Raft.RequestVote", args, &reply)
 		
 		if !success {
+			time.Sleep(1 * time.Second)
 			//rf.print("Failed to send request vote to server ", server, " Retrying")
 		}
 	}
@@ -286,32 +293,30 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs) {
 		//rf.print(reply.Term, " > ", rf.currentTerm, " in sendRequestVote")
 		//rf.print("Sending stepdown after sending request vote and receiving a higher term from server ", server)
 		rf.currentTerm = reply.Term
-		select {
-		case rf.stepdownCh <- true:
-			//rf.print("Sent it: Sending stepdown after sending request vote and receiving a higher term from server ", server)
-		default:
-			rf.state = Follower
-			//rf.print("Directly changing state in sendRequestVote")
-		}
+		rf.convertToFollower(server)
 	}
 	if reply.VoteGranted {
 		rf.noOfVotes += 1
 		if rf.hasMajorityVotes() {
-			//rf.print("Sending wonElection after recving vote from ", server)
-			rf.state = Leader
-			rf.nextIndex = []int{}
-			rf.matchIndex = []int{}
-			for range rf.peers {
-				rf.nextIndex = append(rf.nextIndex, len(rf.log))
-				rf.matchIndex = append(rf.matchIndex, 0)
-			}
-			select {
-			case rf.wonElectionCh <- true:
-				//rf.print("Sent it: Sending wonElection after recving vote from ", server)
-			default:
-				//rf.print("Directly changing state to Leader")
-			}
+			rf.convertToLeader(server)
 		}
+	}
+}
+
+func (rf *Raft) convertToLeader(tippingVoteFrom int) {
+	//rf.print("Sending wonElection after recving vote from ", tippingVoteFrom)
+	rf.state = Leader
+	rf.nextIndex = []int{}
+	rf.matchIndex = []int{}
+	for range rf.peers {
+		rf.nextIndex = append(rf.nextIndex, len(rf.log))
+		rf.matchIndex = append(rf.matchIndex, 0)
+	}
+	select {
+	case rf.wonElectionCh <- true:
+		//rf.print("Sent it: Sending wonElection after recving vote from ", tippingVoteFrom)
+	default:
+		//rf.print("Directly changing state to Leader")
 	}
 }
 
@@ -354,13 +359,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	} else {
 		//rf.print("Stepping down after receiving append entry from ", args.LeaderId)
 		rf.currentTerm = args.Term
-		select {
-		case rf.stepdownCh <- true:
-			//rf.print("Sent it: Stepping down after appending entry from ", args.LeaderId)
-		default:
-			//rf.print("Directly changing state in AppendEntries")
-			rf.state = Follower
-		}
+		rf.convertToFollower(args.LeaderId)
 	}
 	rf.currentTerm = args.Term
 
@@ -384,16 +383,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Success = true
 
-	newLog := []LogEntry{}
-	//rf.print("hdhdhdh", rf.log)
-	for i := 0; i <= args.PrevLogIndex; i++ {
-		newLog = append(newLog, rf.log[i])
-	}
-	rf.log = newLog
-
-	for i := range args.Entries {
-		rf.log = append(rf.log, args.Entries[i])
-	}
+	rf.log = rf.appendLogEntries(args.Entries, args.PrevLogIndex)
 
 	if args.LeaderCommit > rf.commitIndex {
 		min := args.LeaderCommit
@@ -407,14 +397,23 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	for rf.commitIndex > rf.lastApplied {
 		rf.lastApplied += 1
-		toapply := ApplyMsg {
-			CommandValid: true,
-			Command: rf.log[rf.lastApplied].Command,
-			CommandIndex: rf.lastApplied,
-		}
 		//rf.print("Applying the entry ", rf.log[rf.lastApplied])
-		rf.applyCh <- toapply
+		rf.applyLogEntry(rf.lastApplied)
 	}
+}
+
+func (rf *Raft) appendLogEntries(newEntries []LogEntry, prevLogIndex int) []LogEntry {
+	newLog := []LogEntry{}
+	//rf.print("hdhdhdh", rf.log)
+	for i := 0; i <= prevLogIndex; i++ {
+		newLog = append(newLog, rf.log[i])
+	}
+
+	for i := range newEntries {
+		newLog = append(newLog, newEntries[i])
+	}
+
+	return newLog
 }
 
 func (rf *Raft) notifyCommRevdFromLeader(serverEncountered int) {
@@ -444,6 +443,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs) {
 			
 			if !success {
 				//rf.print("Failed to send append entries to server ", server, " Retrying")
+				time.Sleep(1 * time.Second)
 				continue
 			}
 		}
@@ -463,19 +463,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs) {
 		if reply.Term > args.Term {
 			//rf.print("Stepping down after sending append entry to ", server)
 			rf.currentTerm = reply.Term
-			select {
-			case rf.stepdownCh <- true:
-				// The state change will happen in the main loop
-				//rf.print("Sent it: Stepping down after sending append entry to ", server)
-			default:
-				// The main loop is no longer listening for the stepdownCh channel
-				// because it's time for a new heartbeat
-				// Set state to follower here and when the heartbeat routine
-				// acquires the lock, it will abort operation, seeing that it's
-				// no longer the leader
-				rf.state = Follower
-				//rf.print("Directly changing state in the sendAppendEntries because of blocked channel")
-			}
+			rf.convertToFollower(server)
 			rf.mu.Unlock()
 			return
 		}
@@ -485,17 +473,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs) {
 					cmdIndex := args.PrevLogIndex + i + 1
 					rf.noOfCopies[cmdIndex] += 1
 					//rf.print("Append entries to server ", server, " was successful", " no of copies with the command at ", cmdIndex, " is now ", rf.noOfCopies[cmdIndex])
-					if rf.noOfCopies[cmdIndex] == len(rf.peers) / 2 + 1 {
+					if rf.noOfCopies[cmdIndex] == rf.majority() {
 						rf.commitIndex = max(cmdIndex, rf.commitIndex)
 						for rf.commitIndex > rf.lastApplied {
 							rf.lastApplied += 1
-							toapply := ApplyMsg {
-								CommandValid: true,
-								Command: rf.log[rf.lastApplied].Command,
-								CommandIndex: rf.lastApplied,
-							}
-							//rf.print("Applying entry ", rf.log[rf.lastApplied])
-							rf.applyCh <- toapply
+							rf.applyLogEntry(rf.lastApplied)
 						}
 					}
 				}
@@ -507,23 +489,33 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs) {
 					rf.mu.Unlock()
 					return
 				}
-				args.Entries = rf.log[rf.nextIndex[server]:]
-				args.PrevLogIndex = rf.nextIndex[server] - 1
-				args.PrevLogTerm = rf.log[rf.nextIndex[server] - 1].Term
-				rf.mu.Unlock()
 			} else {
 				//rf.print("Server ", server, " doenst have the required entry. Reducing nextIndex from ", rf.nextIndex[server], " to ", reply.ShouldBeNext, " and retrying")
 				rf.nextIndex[server] = reply.ShouldBeNext
-				args.Entries = rf.log[rf.nextIndex[server]:]
-				args.PrevLogIndex = rf.nextIndex[server] - 1
-				args.PrevLogTerm = rf.log[rf.nextIndex[server] - 1].Term
-				rf.mu.Unlock()
 			}
+			args.Entries = rf.log[rf.nextIndex[server]:]
+			args.PrevLogIndex = rf.nextIndex[server] - 1
+			args.PrevLogTerm = rf.log[rf.nextIndex[server] - 1].Term
+			rf.mu.Unlock()
 		} else {
 			rf.mu.Unlock()
 			return
 		}
 	}
+}
+
+func (rf *Raft) majority() int {
+	return len(rf.peers) / 2 + 1
+}
+
+func (rf *Raft) applyLogEntry(index int) {
+	toapply := ApplyMsg {
+		CommandValid: true,
+		Command: rf.log[index].Command,
+		CommandIndex: index,
+	}
+	//rf.print("Applying entry ", rf.log[index])
+	rf.applyCh <- toapply
 }
 
 func min(a int, b int) int {
