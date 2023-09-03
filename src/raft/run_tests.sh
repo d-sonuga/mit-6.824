@@ -1,6 +1,27 @@
-for i in {0..50}
+USAGE="Usage: run_tests.sh [test tag] [--race]"
+
+if [ $# -ne 1 ] && [ $# -ne 2 ]
+then
+    echo "$USAGE"
+    exit 1
+fi
+
+if [ $# -eq 2 ] && [ $2 != "--race" ]
+then
+    echo "$USAGE"
+    exit 1
+fi
+
+mkdir test_output &> /dev/null
+
+for i in {0..49}
 do
-    go test -race -run 2A > "test_output-$i" &
+    if [ $# -eq 2 ]
+    then
+        go test -race -run $1 > "test_output/test_output-$i" &
+    else
+        go test -run $1 > "test_output/test_output-$i" &
+    fi
 done
 
 wait
