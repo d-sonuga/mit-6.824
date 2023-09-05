@@ -213,7 +213,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		if reply.VoteGranted && rf.state == Follower {
 			rf.notifyCommRevdFromLeader(args.CandidateId)
 		}
-		////rf.persist()
+		rf.persist()
 		rf.mu.Unlock()
 	}()
 
@@ -317,12 +317,12 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs) {
 		//rf.print("Sending stepdown after sending request vote and receiving a higher term from server ", server)
 		rf.currentTerm = reply.Term
 		rf.convertToFollower(server)
-		//rf.persist()
+		rf.persist()
 	} else if reply.VoteGranted {
 		rf.noOfVotes += 1
 		if rf.hasMajorityVotes() {
 			rf.convertToLeader(server)
-			//rf.persist()
+			rf.persist()
 		}
 	}
 }
@@ -366,7 +366,7 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer func() {
-		//rf.persist()
+		rf.persist()
 		rf.mu.Unlock()
 	}()
 
@@ -506,7 +506,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs) {
 		//rf.print("Stepping down after sending append entry to ", server)
 		rf.currentTerm = reply.Term
 		rf.convertToFollower(server)
-		//rf.persist()
+		rf.persist()
 		return
 	}
 	if reply.Success {
@@ -601,7 +601,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	entry := LogEntry{ Command: command, Term:  rf.currentTerm }
 	rf.log = append(rf.log, entry)
 	rf.noOfCopies[len(rf.log) - 1] = 1
-	//rf.persist()
+	rf.persist()
 
 	rf.mu.Unlock()
 
@@ -663,7 +663,7 @@ func (rf *Raft) initNewElection() *RequestVoteArgs {
 	rf.currentTerm += 1
 	rf.noOfVotes = 1
 	rf.votedFor = rf.me
-	//rf.persist()
+	rf.persist()
 	return &RequestVoteArgs {
 		Term: rf.currentTerm,
 		CandidateId: rf.me,

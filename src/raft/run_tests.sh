@@ -14,14 +14,13 @@ fi
 
 mkdir test_output &> /dev/null
 
-for i in {0..49}
+for i in {0..9}
 do
     if [ $# -eq 2 ]
     then
-        go test -race -run $1 > "test_output/test_output-$i" &
+        go test -race -run $1 > "test_output/test_output-$i" 
     else
-        go test -run $1 > "test_output/test_output-$i" &
+        go test -run $1 > "test_output/test_output-$i" 
     fi
 done
 
-wait
